@@ -6,12 +6,17 @@ import json
 import random
 import threading
 import platform
+import logging
 from datetime import datetime
 
 from flask import Flask, render_template, request, jsonify, Response
 from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
-from supabase import create_client, Client
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                    format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -21,11 +26,20 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = "baby-monitor-secret-key"
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Initialize Supabase
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL", ""),
-    os.getenv("SUPABASE_KEY", ""),
-)
+# Initialize Supabase (with graceful fallback)
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+supabase = None
+
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        from supabase import create_client, Client
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        log.info("Supabase client connected: %s", SUPABASE_URL[:30] + "...")
+    except Exception as e:
+        log.warning("Supabase init failed (app will run without DB): %s", e)
+else:
+    log.warning("SUPABASE_URL/KEY not set — running without database")
 
 # ---------------------------------------------------------------------------
 # Platform detection: Raspberry Pi vs others (Windows/macOS/Linux desktop)
@@ -69,9 +83,9 @@ if IS_RASPBERRY_PI:
     picam2.configure(camera_config)
     picam2.start()
 
-    print("[HARDWARE] Running on Raspberry Pi with real sensors")
+    log.info("[HARDWARE] Running on Raspberry Pi with real sensors")
 else:
-    print("[SIMULATION] Running in simulation mode (no Raspberry Pi detected)")
+    log.info("[SIMULATION] Running in simulation mode (no Raspberry Pi detected)")
 
 # ---------------------------------------------------------------------------
 # Global state
@@ -178,13 +192,16 @@ def check_alerts(temp, hum, wetness):
             }
         )
 
+    if supabase is None:
+        return
+
     for alert in alerts:
         try:
             supabase.table("alerts").insert(alert).execute()
             socketio.emit("new_alert", alert)
-            print(f"Alert: {alert['message']}")
+            log.info("Alert: %s", alert["message"])
         except Exception as e:
-            print(f"Alert error: {e}")
+            log.error("Alert error: %s", e)
 
 
 def trigger_buzzer():
@@ -218,7 +235,8 @@ def sensor_loop():
                 "wetness_detected": wetness,
                 "is_abnormal": check_abnormal(temperature, humidity),
             }
-            supabase.table("sensor_readings").insert(reading).execute()
+            if supabase is not None:
+                supabase.table("sensor_readings").insert(reading).execute()
 
             check_alerts(temperature, humidity, wetness)
             socketio.emit("sensor_update", current_data)
@@ -228,7 +246,7 @@ def sensor_loop():
 
             time.sleep(5)
         except Exception as e:
-            print(f"Sensor error: {e}")
+            log.error("Sensor error: %s", e)
             time.sleep(2)
 
 
@@ -250,7 +268,7 @@ if IS_RASPBERRY_PI:
                 )
                 time.sleep(0.1)
             except Exception as e:
-                print(f"Stream error: {e}")
+                log.error("Stream error: %s", e)
                 time.sleep(1)
 
 else:
@@ -324,6 +342,8 @@ def api_current_data():
 
 @app.route("/api/history")
 def api_history():
+    if supabase is None:
+        return jsonify([])
     limit = request.args.get("limit", 100, type=int)
     try:
         response = (
@@ -340,6 +360,8 @@ def api_history():
 
 @app.route("/api/alerts")
 def api_alerts():
+    if supabase is None:
+        return jsonify([])
     limit = request.args.get("limit", 50, type=int)
     try:
         response = (
@@ -356,6 +378,8 @@ def api_alerts():
 
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
+    if supabase is None:
+        return jsonify({"temp_min": 20, "temp_max": 25, "humidity_min": 40, "humidity_max": 60})
     if request.method == "GET":
         try:
             response = supabase.table("settings").select("*").eq("id", 1).execute()
@@ -368,7 +392,8 @@ def api_settings():
     elif request.method == "POST":
         try:
             data = request.json
-            supabase.table("settings").update(data).eq("id", 1).execute()
+            if supabase is not None:
+                supabase.table("settings").update(data).eq("id", 1).execute()
 
             if "temp_min" in data:
                 os.environ["TEMP_MIN"] = str(data["temp_min"])
@@ -393,6 +418,8 @@ def video_feed():
 
 @app.route("/api/clear_alerts", methods=["POST"])
 def clear_alerts():
+    if supabase is None:
+        return jsonify({"success": True})
     try:
         supabase.table("alerts").update({"is_read": True}).neq("is_read", True).execute()
         return jsonify({"success": True})
@@ -413,7 +440,7 @@ if __name__ == "__main__":
     mode = "SIMULATION" if not IS_RASPBERRY_PI else "PRODUCTION"
     port = int(os.getenv("PORT", 5000))
     debug = os.getenv("RENDER") is None
-    print(f"Baby Monitor Server Starting [{mode}] on port {port}...")
+    log.info("Baby Monitor Server Starting [%s] on port %s...", mode, port)
 
     import socket
     try:
@@ -421,7 +448,7 @@ if __name__ == "__main__":
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
         s.close()
-        print(f"Network:   http://{local_ip}:{port}")
+        log.info("Network:   http://%s:%s", local_ip, port)
     except Exception:
         pass
 
