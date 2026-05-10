@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Baby Monitor - Live Video</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+        .nav {
+            background: white; border-radius: 15px; padding: 15px 30px;
+            margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+        }
+        .nav h1 { color: #667eea; margin-right: 40px; font-size: 1.4rem; }
+        .nav a {
+            color: #666; text-decoration: none; padding: 10px 20px;
+            border-radius: 8px; transition: all 0.3s; font-weight: 500;
+        }
+        .nav a:hover, .nav a.active { background: #667eea; color: white; }
+
+        .main-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+
+        .video-container {
+            background: #111; border-radius: 15px; overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+            aspect-ratio: 4/3;
+        }
+        .video-container img { width: 100%; height: 100%; display: block; object-fit: contain; }
+
+        .info-panel { display: flex; flex-direction: column; gap: 15px; }
+        .info-card {
+            background: white; border-radius: 15px; padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center;
+        }
+        .info-label { font-size: 0.7rem; color: #999; text-transform: uppercase; letter-spacing: 1px; }
+        .info-value { font-size: 1.8rem; font-weight: 700; margin: 8px 0; color: #333; }
+        .status-badge {
+            display: inline-block; padding: 4px 14px; border-radius: 20px;
+            font-size: 0.7rem; font-weight: 600;
+        }
+        .normal { background: #d4edda; color: #155724; }
+        .warning { background: #fff3cd; color: #856404; }
+        .critical { background: #f8d7da; color: #721c24; }
+
+        @media (max-width: 768px) {
+            .main-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <h1>Smart Baby Monitor</h1>
+            <a href="/">Dashboard</a>
+            <a href="/live" class="active">Live Video</a>
+            <a href="/history">History</a>
+            <a href="/settings">Settings</a>
+        </div>
+
+        <div class="main-grid">
+            <div class="video-container">
+                <img src="/video_feed" alt="Live Baby Monitor Stream" id="videoFeed">
+            </div>
+
+            <div class="info-panel">
+                <div class="info-card">
+                    <div class="info-label">🌡️ Temperature</div>
+                    <div class="info-value" id="temp">-- °C</div>
+                    <div id="temp-badge" class="status-badge">Loading...</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">💧 Humidity</div>
+                    <div class="info-value" id="humidity">-- %</div>
+                    <div id="hum-badge" class="status-badge">Loading...</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">🏃 Motion</div>
+                    <div class="info-value" id="motion">--</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">🚼 Diaper</div>
+                    <div class="info-value" id="wetness">--</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        function getStatus(value, min, max) {
+            if (value == null) return 'normal';
+            if (value < min || value > max) return 'critical';
+            if (value < min + 2 || value > max - 2) return 'warning';
+            return 'normal';
+        }
+
+        socket.on('sensor_update', (data) => {
+            document.getElementById('temp').textContent = (data.temperature || '--') + ' °C';
+            document.getElementById('humidity').textContent = (data.humidity || '--') + ' %';
+            document.getElementById('motion').textContent = data.motion ? 'Moving' : 'Quiet';
+            document.getElementById('wetness').textContent = data.wetness ? 'Wet' : 'Dry';
+
+            const t = getStatus(data.temperature, 20, 25);
+            const tb = document.getElementById('temp-badge');
+            tb.className = 'status-badge ' + t;
+            tb.textContent = t === 'normal' ? 'Normal' : t === 'warning' ? 'Warning' : 'Critical';
+
+            const h = getStatus(data.humidity, 40, 60);
+            const hb = document.getElementById('hum-badge');
+            hb.className = 'status-badge ' + h;
+            hb.textContent = h === 'normal' ? 'Normal' : h === 'warning' ? 'Warning' : 'Critical';
+        });
+
+        const videoImg = document.getElementById('videoFeed');
+        setInterval(() => { videoImg.src = '/video_feed?' + Date.now(); }, 5000);
+    </script>
+</body>
+</html>

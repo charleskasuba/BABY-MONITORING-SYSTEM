@@ -1,0 +1,6 @@
+db password ypjJ30YpsLb5wXjU
+db name baby
+https://tyerwrjtlciubhgzpffg.supabase.co
+sb_publishable_CMXSM-hyfT-Ulh3MF9aLcQ_rP0dh4Fp
+sb_secret_xVZp6OT7rlijtOObcy5TNg_2QbH7wZR
+
