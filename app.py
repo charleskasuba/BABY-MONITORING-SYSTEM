@@ -101,7 +101,6 @@ current_data = {
 
 # Track when real Pi data was last received (so simulation doesn't overwrite it)
 _last_real_data = 0
-}
 
 
 def simulate_sensor():
