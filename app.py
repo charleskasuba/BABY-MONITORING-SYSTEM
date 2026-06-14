@@ -99,6 +99,10 @@ current_data = {
     "last_update": None,
 }
 
+# Track when real Pi data was last received (so simulation doesn't overwrite it)
+_last_real_data = 0
+}
+
 
 def simulate_sensor():
     """Generate plausible simulated sensor data for development/testing."""
@@ -218,6 +222,10 @@ def sensor_loop():
             if IS_RASPBERRY_PI:
                 temperature, humidity, motion, sound, wetness = read_real_sensors()
             else:
+                # On cloud: skip simulation if real Pi data arrived within last 10s
+                if time.time() - _last_real_data < 10:
+                    time.sleep(2)
+                    continue
                 temperature, humidity, motion, sound, wetness = simulate_sensor()
 
             current_data["temperature"] = temperature
@@ -425,6 +433,59 @@ def clear_alerts():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Raspberry Pi ingestion endpoint
+# ---------------------------------------------------------------------------
+@app.route("/api/ingest", methods=["POST"])
+def api_ingest():
+    """Receive sensor readings from the Raspberry Pi."""
+    data = request.get_json(silent=True) or {}
+    required = ["temperature", "humidity"]
+    if not all(k in data for k in required):
+        return jsonify({"error": "Missing required fields: temperature, humidity"}), 400
+
+    temp = data.get("temperature")
+    hum = data.get("humidity")
+    motion = data.get("motion_detected", False)
+    sound = data.get("sound_level", 0)
+    wetness = data.get("wetness_detected", False)
+
+    # Mark that real data arrived (stops simulation loop from overwriting)
+    global _last_real_data
+    _last_real_data = time.time()
+
+    # Update global state (used by /api/current_data, WebSocket, etc.)
+    current_data["temperature"] = temp
+    current_data["humidity"] = hum
+    current_data["motion"] = motion
+    current_data["sound"] = sound
+    current_data["wetness"] = wetness
+    current_data["last_update"] = datetime.now().isoformat()
+
+    # Persist to Supabase
+    if supabase is not None:
+        reading = {
+            "temperature": temp,
+            "humidity": hum,
+            "motion_detected": motion,
+            "sound_level": sound,
+            "wetness_detected": wetness,
+            "is_abnormal": check_abnormal(temp, hum),
+        }
+        try:
+            supabase.table("sensor_readings").insert(reading).execute()
+        except Exception as e:
+            log.error("DB insert error: %s", e)
+
+    # Check alert thresholds
+    check_alerts(temp, hum, wetness)
+
+    # Broadcast live update
+    socketio.emit("sensor_update", current_data)
+
+    return jsonify({"status": "ok", "abnormal": check_abnormal(temp, hum)})
 
 
 # ---------------------------------------------------------------------------
