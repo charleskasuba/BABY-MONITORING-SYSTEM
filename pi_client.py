@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
 import os
 import sys
-import json
 import time
-from time import sleep, time
+from time import sleep, time as time_now
 from datetime import datetime
 
 import board
-import cv2
 import adafruit_dht
 from gpiozero import DigitalInputDevice
 import requests
-
-# Silence OpenCV warnings
-os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
-os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SERVER_URL = "https://baby-monitoring-system.onrender.com"
 
-# Sensor pins (matching your existing hardware setup)
+# Sensor pins
 WATER_PIN = 17
 MOTION_PIN = 27
 SOUND_PIN = 22
@@ -30,9 +24,33 @@ DHT_PIN = board.D4
 # Recording
 RECORD_DURATION = 10
 VIDEO_FOLDER = "recordings"
-
-# Polling interval (seconds)
 INTERVAL = 3
+
+# ---------------------------------------------------------------------------
+# Camera setup: try picamera2 first, fall back to OpenCV
+# ---------------------------------------------------------------------------
+CAMERA = None
+try:
+    from picamera2 import Picamera2
+    CAMERA = Picamera2()
+    cam_config = CAMERA.create_video_configuration(main={"size": (640, 480)})
+    CAMERA.configure(cam_config)
+    CAMERA.start()
+    print("[CAMERA] picamera2 initialized")
+except Exception:
+    import cv2 as _cv2
+    os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+    os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"
+    try:
+        cap = _cv2.VideoCapture(0)
+        if cap.isOpened():
+            cap.release()
+            CAMERA = "cv2"
+            print("[CAMERA] OpenCV V4L2 initialized")
+        else:
+            print("[CAMERA] No camera detected — recording disabled")
+    except Exception:
+        print("[CAMERA] No camera detected — recording disabled")
 
 # ---------------------------------------------------------------------------
 # Sensor setup
@@ -71,32 +89,46 @@ def post_data(temp, hum, motion, sound, wetness):
 
 
 def record_security_event(reason):
-    """Record a 10s video clip (same as your existing code)."""
+    """Record a 10s video clip using picamera2 or OpenCV."""
+    if CAMERA is None:
+        print(f"  [CAM SKIP] {reason} — no camera")
+        return
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(VIDEO_FOLDER, f"ALERT_{reason}_{timestamp}.avi")
+    print(f"  [RECORDING] 10s clip — {reason}")
 
     try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            print(f"  [CAM CLEAR] Triggered by {reason} — camera offline")
-            return
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        fourcc = cv2.VideoWriter_fourcc(*"XVID")
-        out = cv2.VideoWriter(filename, fourcc, 20.0, (640, 480))
-
-        print(f"  [RECORDING] 10s clip — {reason}")
-        start = time()
-        while int(time() - start) < RECORD_DURATION:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            out.write(frame)
-            sleep(0.05)
-
-        cap.release()
-        out.release()
+        if CAMERA == "cv2":
+            import cv2
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                return
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+            out = cv2.VideoWriter(filename, fourcc, 20.0, (640, 480))
+            start = time_now()
+            while int(time_now() - start) < RECORD_DURATION:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                out.write(frame)
+                sleep(0.05)
+            cap.release()
+            out.release()
+        else:
+            # picamera2
+            import cv2
+            import numpy as np
+            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+            out = cv2.VideoWriter(filename, fourcc, 20.0, (640, 480))
+            start = time_now()
+            while int(time_now() - start) < RECORD_DURATION:
+                frame = CAMERA.capture_array()
+                out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                sleep(0.05)
+            out.release()
         print(f"  [SAVED] {filename}")
     except Exception:
         print(f"  [CAM CLEAR] Triggered by {reason} (bypassed)")
