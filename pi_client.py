@@ -26,8 +26,12 @@ RECORD_DURATION = 10
 VIDEO_FOLDER = "recordings"
 INTERVAL = 3
 
+# Wetness sensor: Set to True if your sensor outputs HIGH (1) when wet.
+# Most sensors output LOW (0) when wet — leave as False for that.
+WETNESS_ACTIVE_HIGH = False
+
 # ---------------------------------------------------------------------------
-# Camera setup: try picamera2 first, fall back to OpenCV
+# Camera setup: try picamera2 only (no OpenCV V4L2 fallback — too noisy)
 # ---------------------------------------------------------------------------
 CAMERA = None
 try:
@@ -38,19 +42,7 @@ try:
     CAMERA.start()
     print("[CAMERA] picamera2 initialized")
 except Exception:
-    import cv2 as _cv2
-    os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
-    os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"
-    try:
-        cap = _cv2.VideoCapture(0)
-        if cap.isOpened():
-            cap.release()
-            CAMERA = "cv2"
-            print("[CAMERA] OpenCV V4L2 initialized")
-        else:
-            print("[CAMERA] No camera detected — recording disabled")
-    except Exception:
-        print("[CAMERA] No camera detected — recording disabled")
+    print("[CAMERA] No camera detected — recording disabled")
 
 # ---------------------------------------------------------------------------
 # Sensor setup
@@ -89,49 +81,26 @@ def post_data(temp, hum, motion, sound, wetness):
 
 
 def record_security_event(reason):
-    """Record a 10s video clip using picamera2 or OpenCV."""
+    """Record a 10s video clip using picamera2."""
     if CAMERA is None:
-        print(f"  [CAM SKIP] {reason} — no camera")
         return
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(VIDEO_FOLDER, f"ALERT_{reason}_{timestamp}.avi")
     print(f"  [RECORDING] 10s clip — {reason}")
-
     try:
-        if CAMERA == "cv2":
-            import cv2
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                return
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            fourcc = cv2.VideoWriter_fourcc(*"XVID")
-            out = cv2.VideoWriter(filename, fourcc, 20.0, (640, 480))
-            start = time_now()
-            while int(time_now() - start) < RECORD_DURATION:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                out.write(frame)
-                sleep(0.05)
-            cap.release()
-            out.release()
-        else:
-            # picamera2
-            import cv2
-            import numpy as np
-            fourcc = cv2.VideoWriter_fourcc(*"XVID")
-            out = cv2.VideoWriter(filename, fourcc, 20.0, (640, 480))
-            start = time_now()
-            while int(time_now() - start) < RECORD_DURATION:
-                frame = CAMERA.capture_array()
-                out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-                sleep(0.05)
-            out.release()
+        import cv2
+        import numpy as np
+        fourcc = cv2.VideoWriter_fourcc(*"XVID")
+        out = cv2.VideoWriter(filename, fourcc, 20.0, (640, 480))
+        start = time_now()
+        while int(time_now() - start) < RECORD_DURATION:
+            frame = CAMERA.capture_array()
+            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            sleep(0.05)
+        out.release()
         print(f"  [SAVED] {filename}")
     except Exception:
-        print(f"  [CAM CLEAR] Triggered by {reason} (bypassed)")
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +109,8 @@ def record_security_event(reason):
 try:
     while True:
         # Read sensors
-        water_active = water_sensor.value == 0
+        wet = water_sensor.value
+        water_active = (wet == 1) if WETNESS_ACTIVE_HIGH else (wet == 0)
         motion_active = motion_sensor.value == 1
         sound_active = sound_sensor.value == 1
 

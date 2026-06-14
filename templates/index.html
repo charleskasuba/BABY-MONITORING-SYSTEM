@@ -81,6 +81,36 @@
 
         .last-update { text-align: center; color: rgba(255,255,255,0.8); margin-top: 20px; font-size: 0.78rem; }
 
+        /* Chatbot */
+        .chat-section { margin-top: 30px; }
+        .chat-container {
+            background: white; border-radius: 15px; padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .chat-messages {
+            height: 200px; overflow-y: auto; margin-bottom: 12px;
+            padding: 10px; background: #f8f9fa; border-radius: 10px;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .chat-msg {
+            padding: 10px 14px; border-radius: 12px; max-width: 85%;
+            line-height: 1.4; font-size: 0.85rem;
+        }
+        .chat-user { background: #667eea; color: white; align-self: flex-end; border-bottom-right-radius: 4px; }
+        .chat-bot { background: #e9ecef; color: #333; align-self: flex-start; border-bottom-left-radius: 4px; }
+        .chat-bot strong { color: #333; }
+        .chat-input-row { display: flex; gap: 10px; }
+        .chat-input-row input {
+            flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 8px;
+            font-size: 0.9rem; outline: none;
+        }
+        .chat-input-row input:focus { border-color: #667eea; }
+        .chat-input-row button {
+            padding: 12px 20px; background: #667eea; color: white; border: none;
+            border-radius: 8px; cursor: pointer; font-weight: 600;
+        }
+        .chat-input-row button:hover { background: #5a67d8; }
+
         @media (max-width: 768px) {
             .card-value { font-size: 2rem; }
             .nav h1 { width: 100%; }
@@ -133,6 +163,20 @@
             <h2>Recent Alerts</h2>
             <div id="alerts-list"></div>
             <button class="btn" onclick="clearAlerts()" style="margin-top: 15px;">Clear All Alerts</button>
+        </div>
+
+        <div class="chat-section">
+            <div class="chat-container">
+                <h2 style="margin-bottom:12px;">Assistant</h2>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="chat-msg chat-bot">Hello! Ask me about temperature, humidity, motion, or diaper status.</div>
+                </div>
+                <div class="chat-input-row">
+                    <input type="text" id="chatInput" placeholder="Ask about baby's status..." 
+                           onkeydown="if(event.key==='Enter') sendChat()">
+                    <button onclick="sendChat()">Send</button>
+                </div>
+            </div>
         </div>
 
         <div class="last-update">Last update: <span id="last-update">--</span></div>
@@ -240,6 +284,36 @@
         });
 
         socket.on('new_alert', () => { loadAlerts(); });
+
+        async function sendChat() {
+            const input = document.getElementById('chatInput');
+            const msg = input.value.trim();
+            if (!msg) return;
+            input.value = '';
+
+            const msgs = document.getElementById('chatMessages');
+            msgs.innerHTML += `<div class="chat-msg chat-user">${escapeHtml(msg)}</div>`;
+            msgs.scrollTop = msgs.scrollHeight;
+
+            try {
+                const r = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message: msg})
+                });
+                const data = await r.json();
+                msgs.innerHTML += `<div class="chat-msg chat-bot">${data.reply}</div>`;
+            } catch(e) {
+                msgs.innerHTML += `<div class="chat-msg chat-bot">Sorry, I couldn't reach the server.</div>`;
+            }
+            msgs.scrollTop = msgs.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const d = document.createElement('div');
+            d.textContent = text;
+            return d.innerHTML;
+        }
 
         loadHistory();
         loadAlerts();

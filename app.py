@@ -488,6 +488,85 @@ def api_ingest():
 
 
 # ---------------------------------------------------------------------------
+# Chatbot / assistant endpoint
+# ---------------------------------------------------------------------------
+CHAT_REPLIES = {
+    "temperature": "The current temperature is {temp}°C. The safe range is {tmin}–{tmax}°C.",
+    "humidity": "The current humidity is {hum}%. The safe range is {hmin}–{hmax}%.",
+    "motion": "Baby is currently **{motion}**.",
+    "diaper": "Diaper is **{diaper}**.",
+}
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    data = request.get_json(silent=True) or {}
+    msg = (data.get("message") or "").lower().strip()
+    d = current_data
+
+    temp = d.get("temperature") or "--"
+    hum = d.get("humidity") or "--"
+    tmin = os.getenv("TEMP_MIN", "20")
+    tmax = os.getenv("TEMP_MAX", "25")
+    hmin = os.getenv("HUMIDITY_MIN", "40")
+    hmax = os.getenv("HUMIDITY_MAX", "60")
+    motion_str = "moving" if d.get("motion") else "quiet/sleeping"
+    diaper_str = "wet — needs changing" if d.get("wetness") else "dry"
+
+    if any(w in msg for w in ["temp", "hot", "cold", "warm"]):
+        reply = f"The current temperature is {temp}°C. Safe range is {tmin}–{tmax}°C."
+        if temp != "--":
+            if temp < float(tmin):
+                reply += " It's **below** the minimum — consider warming the room."
+            elif temp > float(tmax):
+                reply += " It's **above** the maximum — consider cooling the room."
+            else:
+                reply += " This is within the normal range."
+    elif any(w in msg for w in ["humid", "moist", "dry"]):
+        reply = f"The current humidity is {hum}%. Safe range is {hmin}–{hmax}%."
+        if hum != "--":
+            if hum < float(hmin):
+                reply += " It's **below** the minimum — consider using a humidifier."
+            elif hum > float(hmax):
+                reply += " It's **above** the maximum — consider using a dehumidifier."
+            else:
+                reply += " This is within the normal range."
+    elif any(w in msg for w in ["motion", "move", "moving", "activity", "active"]):
+        reply = f"Baby is currently **{motion_str}**."
+        if d.get("motion"):
+            reply += " Recent motion was detected."
+        else:
+            reply += " No recent motion detected — baby may be sleeping."
+    elif any(w in msg for w in ["diaper", "wet", "wee", "nappy", "change"]):
+        reply = f"Diaper is **{diaper_str}**."
+        if d.get("wetness"):
+            reply += " It's time for a change!"
+        else:
+            reply += " All good, no change needed."
+    elif any(w in msg for w in ["hi", "hello", "hey", "help"]):
+        reply = "Hello! I'm your Baby Monitor assistant. Ask me about **temperature**, **humidity**, **motion**, or **diaper** status."
+    elif any(w in msg for w in ["status", "summary", "all", "overview"]):
+        ab = check_abnormal(temp if temp != "--" else None, hum if hum != "--" else None)
+        flags = []
+        if d.get("motion"):
+            flags.append("motion detected")
+        if d.get("wetness"):
+            flags.append("wet diaper")
+        if ab:
+            flags.append("⚠️ abnormal readings")
+        summary = f"**Temperature:** {temp}°C  |  **Humidity:** {hum}%  |  **Motion:** {motion_str}  |  **Diaper:** {diaper_str}"
+        if flags:
+            summary += f"\n\nNotable: {' · '.join(flags)}"
+        reply = summary
+    else:
+        reply = (
+            "I can answer about: **temperature**, **humidity**, **motion**, **diaper**, "
+            "or say **status** for a full summary. Type **help** for options."
+        )
+
+    return jsonify({"reply": reply})
+
+
+# ---------------------------------------------------------------------------
 # Start background sensor thread
 # ---------------------------------------------------------------------------
 sensor_thread = threading.Thread(target=sensor_loop, daemon=True)
