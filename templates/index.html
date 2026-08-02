@@ -147,6 +147,12 @@
                 <div id="motion-status" class="card-status">Waiting...</div>
             </div>
             <div class="card">
+                <div class="card-icon">🔊</div>
+                <div class="card-title">Sound</div>
+                <div class="card-value" id="sound">--</div>
+                <div id="sound-status" class="card-status">Waiting...</div>
+            </div>
+            <div class="card">
                 <div class="card-icon">🚼</div>
                 <div class="card-title">Diaper</div>
                 <div class="card-value" id="wetness">--</div>
@@ -169,7 +175,7 @@
             <div class="chat-container">
                 <h2 style="margin-bottom:12px;">Assistant</h2>
                 <div class="chat-messages" id="chatMessages">
-                    <div class="chat-msg chat-bot">Hello! Ask me about temperature, humidity, motion, or diaper status.</div>
+                    <div class="chat-msg chat-bot">Hello! Ask me about temperature, humidity, motion, sound, or diaper status.</div>
                 </div>
                 <div class="chat-input-row">
                     <input type="text" id="chatInput" placeholder="Ask about baby's status..." 
@@ -255,6 +261,7 @@
             document.getElementById('temp').textContent = data.temperature || '--';
             document.getElementById('humidity').textContent = data.humidity || '--';
             document.getElementById('motion').textContent = data.motion ? 'Active' : 'Quiet';
+            document.getElementById('sound').textContent = data.sound ? 'Loud' : 'Quiet';
             document.getElementById('wetness').textContent = data.wetness ? 'Wet' : 'Dry';
             document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
 
@@ -268,6 +275,9 @@
 
             document.getElementById('motion-status').className = `card-status ${data.motion ? 'status-normal' : 'status-warning'}`;
             document.getElementById('motion-status').textContent = data.motion ? 'Baby moving' : 'No motion';
+
+            document.getElementById('sound-status').className = `card-status ${data.sound ? 'status-warning' : 'status-normal'}`;
+            document.getElementById('sound-status').textContent = data.sound ? 'Loud noise' : 'Quiet';
 
             document.getElementById('wetness-status').className = `card-status ${!data.wetness ? 'status-normal' : 'status-warning'}`;
             document.getElementById('wetness-status').textContent = data.wetness ? 'Needs changing' : 'Dry';

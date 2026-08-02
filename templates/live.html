@@ -86,6 +86,10 @@
                     <div class="info-value" id="motion">--</div>
                 </div>
                 <div class="info-card">
+                    <div class="info-label">🔊 Sound</div>
+                    <div class="info-value" id="sound">--</div>
+                </div>
+                <div class="info-card">
                     <div class="info-label">🚼 Diaper</div>
                     <div class="info-value" id="wetness">--</div>
                 </div>
@@ -107,6 +111,7 @@
             document.getElementById('temp').textContent = (data.temperature || '--') + ' °C';
             document.getElementById('humidity').textContent = (data.humidity || '--') + ' %';
             document.getElementById('motion').textContent = data.motion ? 'Moving' : 'Quiet';
+            document.getElementById('sound').textContent = data.sound ? 'Loud' : 'Quiet';
             document.getElementById('wetness').textContent = data.wetness ? 'Wet' : 'Dry';
 
             const t = getStatus(data.temperature, 20, 25);

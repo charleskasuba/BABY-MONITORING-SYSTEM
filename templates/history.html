@@ -117,7 +117,7 @@
             <h2>Recent Readings</h2>
             <table>
                 <thead>
-                    <tr><th>Time</th><th>Temperature</th><th>Humidity</th><th>Motion</th><th>Diaper</th></tr>
+                    <tr><th>Time</th><th>Temperature</th><th>Humidity</th><th>Motion</th><th>Sound</th><th>Diaper</th></tr>
                 </thead>
                 <tbody id="tableBody"></tbody>
             </table>
@@ -179,6 +179,7 @@
                             <td>${r.temperature != null ? r.temperature + '°C' : '--'}</td>
                             <td>${r.humidity != null ? r.humidity + '%' : '--'}</td>
                             <td>${r.motion_detected ? 'Active' : 'Quiet'}</td>
+                            <td>${r.sound_level ? 'Loud' : 'Quiet'}</td>
                             <td>${r.wetness_detected ? 'Wet' : 'Dry'}</td>
                         </tr>
                     `).join('');

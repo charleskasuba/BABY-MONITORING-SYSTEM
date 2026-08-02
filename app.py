@@ -332,11 +332,14 @@ def api_chat():
     elif any(w in msg for w in ["motion", "move", "moving", "activity", "active"]):
         reply = f"Baby is currently **{motion_str}**."
         reply += " Recent motion was detected." if d.get("motion") else " No recent motion — baby may be sleeping."
+    elif any(w in msg for w in ["sound", "noise", "loud", "cry", "crying"]):
+        reply = "Sound level is currently **loud/noisy**." if d.get("sound") else " Sound level is currently **quiet**."
+        reply += " This may indicate crying or a loud environment." if d.get("sound") else " No loud sounds detected."
     elif any(w in msg for w in ["diaper", "wet", "wee", "nappy", "change"]):
         reply = f"Diaper is **{diaper_str}**."
         reply += " It's time for a change!" if d.get("wetness") else " All good, no change needed."
     elif any(w in msg for w in ["hi", "hello", "hey", "help"]):
-        reply = "Hello! I'm your Baby Monitor assistant. Ask about **temperature**, **humidity**, **motion**, or **diaper**."
+        reply = "Hello! I'm your Baby Monitor assistant. Ask about **temperature**, **humidity**, **motion**, **sound**, or **diaper**."
     elif any(w in msg for w in ["status", "summary", "all", "overview"]):
         flags = []
         if d.get("motion"):
@@ -345,11 +348,11 @@ def api_chat():
             flags.append("wet diaper")
         if check_abnormal(temp if temp != "--" else None, hum if hum != "--" else None):
             flags.append("⚠️ abnormal readings")
-        reply = f"**Temperature:** {temp}°C  |  **Humidity:** {hum}%  |  **Motion:** {motion_str}  |  **Diaper:** {diaper_str}"
+        reply = f"**Temperature:** {temp}°C  |  **Humidity:** {hum}%  |  **Motion:** {motion_str}  |  **Sound:** {'loud' if d.get('sound') else 'quiet'}  |  **Diaper:** {diaper_str}"
         if flags:
             reply += f"\n\nNotable: {' · '.join(flags)}"
     else:
-        reply = ("I can answer about: **temperature**, **humidity**, **motion**, **diaper**, "
+        reply = ("I can answer about: **temperature**, **humidity**, **motion**, **sound**, **diaper**, "
                  "or say **status** for a full summary. Type **help** for options.")
 
     return jsonify({"reply": reply})
