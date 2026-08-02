@@ -3,3 +3,4 @@ flask-socketio==5.3.6
 python-socketio==5.11.2
 supabase==2.5.1
 python-dotenv==1.0.0
+requests==2.31.0

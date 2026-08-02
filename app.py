@@ -6,6 +6,8 @@ import threading
 import logging
 from datetime import datetime
 
+import requests
+
 from flask import Flask, render_template, request, jsonify, Response
 from flask_socketio import SocketIO
 from dotenv import load_dotenv
@@ -58,6 +60,69 @@ _frame_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # Alert helpers
 # ---------------------------------------------------------------------------
+# Bird (MessageBird) email notifications
+BIRD_API_KEY = os.getenv("BIRD_API_KEY", "")
+BIRD_SENDER = "onboarding@messagebird.dev"
+_last_email_ts = 0
+EMAIL_COOLDOWN = 300  # seconds — at most one email per alert burst
+
+
+def bird_host():
+    """Derive the Bird platform host from the key's region prefix (bk_<region>_...)."""
+    parts = BIRD_API_KEY.split("_")
+    region = parts[1] if len(parts) > 1 and parts[1] else "us1"
+    return f"https://{region}.platform.bird.com"
+
+
+def send_alert_email(alerts):
+    """Send an alert summary email via the Bird Email REST API (throttled)."""
+    global _last_email_ts
+    if not BIRD_API_KEY:
+        log.warning("BIRD_API_KEY not set — skipping email notification")
+        return False
+    recipient = os.getenv("ALERT_EMAIL", "")
+    if not recipient:
+        log.warning("ALERT_EMAIL not set — skipping email notification")
+        return False
+
+    now = time.time()
+    if now - _last_email_ts < EMAIL_COOLDOWN:
+        return False
+
+    items = "".join(
+        f"<li><b>{a['severity'].upper()}</b> — {a['message']}</li>" for a in alerts
+    )
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = {
+        "from": BIRD_SENDER,
+        "to": [recipient],
+        "subject": f"🚼 Baby Monitor Alert ({len(alerts)})",
+        "html": (
+            "<h2>🚼 Baby Monitor Alert</h2>"
+            f"<p>Detected {len(alerts)} issue(s) at <b>{ts}</b>:</p>"
+            f"<ul>{items}</ul>"
+            f"<p>Live dashboard: <a href='https://baby-monitoring-system.onrender.com'>"
+            "https://baby-monitoring-system.onrender.com</a></p>"
+        ),
+    }
+    try:
+        r = requests.post(
+            f"{bird_host()}/v1/email/messages",
+            headers={"Authorization": f"Bearer {BIRD_API_KEY}",
+                     "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+        if r.status_code in (200, 202):
+            _last_email_ts = now
+            log.info("Alert email sent to %s (%s)", recipient, r.status_code)
+            return True
+        log.error("Bird email failed %s: %s", r.status_code, r.text[:300])
+    except Exception as e:
+        log.error("Bird email exception: %s", e)
+    return False
+
+
 def check_abnormal(temp, hum):
     temp_min = float(os.getenv("TEMP_MIN", 20))
     temp_max = float(os.getenv("TEMP_MAX", 25))
@@ -99,16 +164,19 @@ def check_alerts(temp, hum, wetness):
         alerts.append({"alert_type": "wetness", "severity": "warning",
                        "message": "🚼 Diaper wetness detected!"})
 
-    if supabase is None:
+    if not alerts:
         return
 
-    for alert in alerts:
-        try:
-            supabase.table("alerts").insert(alert).execute()
-            socketio.emit("new_alert", alert)
-            log.info("Alert: %s", alert["message"])
-        except Exception as e:
-            log.error("Alert error: %s", e)
+    if supabase is not None:
+        for alert in alerts:
+            try:
+                supabase.table("alerts").insert(alert).execute()
+                socketio.emit("new_alert", alert)
+                log.info("Alert: %s", alert["message"])
+            except Exception as e:
+                log.error("Alert error: %s", e)
+
+    send_alert_email(alerts)
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +273,8 @@ def api_settings():
                 os.environ["HUMIDITY_MIN"] = str(data["humidity_min"])
             if "humidity_max" in data:
                 os.environ["HUMIDITY_MAX"] = str(data["humidity_max"])
+            if "alert_email" in data:
+                os.environ["ALERT_EMAIL"] = data["alert_email"]
             return jsonify({"success": True})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
