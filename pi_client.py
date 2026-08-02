@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import threading
 import time
 from time import sleep, time as time_now
 from datetime import datetime
@@ -26,12 +27,18 @@ RECORD_DURATION = 10
 VIDEO_FOLDER = "recordings"
 INTERVAL = 3
 
-# Wetness sensor: Set to True if your sensor outputs HIGH (1) when wet.
-# Most sensors output LOW (0) when wet — leave as False for that.
+# Live stream frame upload interval (seconds) — how often a JPEG is sent to cloud
+FRAME_UPLOAD_INTERVAL = 2.0
+
+# Wetness sensor: True if sensor outputs HIGH (1) when wet, else False
 WETNESS_ACTIVE_HIGH = False
 
+# Thread lock so recording and streaming never grab the camera at the same time
+is_recording = False
+camera_busy = threading.Lock()
+
 # ---------------------------------------------------------------------------
-# Camera setup: try picamera2 only (no OpenCV V4L2 fallback — too noisy)
+# Camera setup: Native Picamera2 API
 # ---------------------------------------------------------------------------
 CAMERA = None
 try:
@@ -40,9 +47,9 @@ try:
     cam_config = CAMERA.create_video_configuration(main={"size": (640, 480)})
     CAMERA.configure(cam_config)
     CAMERA.start()
-    print("[CAMERA] picamera2 initialized")
-except Exception:
-    print("[CAMERA] No camera detected — recording disabled")
+    print("[CAMERA] Picamera2 initialized successfully.")
+except Exception as e:
+    print(f"[CAMERA] No camera detected or init error: {e}")
 
 # ---------------------------------------------------------------------------
 # Sensor setup
@@ -55,7 +62,7 @@ dht_sensor = adafruit_dht.DHT22(DHT_PIN)
 os.makedirs(VIDEO_FOLDER, exist_ok=True)
 
 print("=" * 65)
-print("  Smart Baby Monitor — Pi Client")
+print("  Smart Baby Monitor — Threaded Pi Client")
 print(f"  Sending to: {SERVER_URL}")
 print("=" * 65)
 
@@ -70,8 +77,7 @@ def post_data(temp, hum, motion, sound, wetness):
         "wetness_detected": wetness,
     }
     try:
-        r = requests.post(f"{SERVER_URL}/api/ingest",
-                          json=payload, timeout=10)
+        r = requests.post(f"{SERVER_URL}/api/ingest", json=payload, timeout=10)
         if r.status_code != 200:
             print(f"  [POST ERROR] HTTP {r.status_code}: {r.text[:100]}")
         return r.ok
@@ -80,33 +86,79 @@ def post_data(temp, hum, motion, sound, wetness):
         return False
 
 
-def record_security_event(reason):
-    """Record a 10s video clip using picamera2."""
-    if CAMERA is None:
-        return
+# ---------------------------------------------------------------------------
+# Video recording (background thread, on motion/sound)
+# ---------------------------------------------------------------------------
+def _video_recorder_worker(reason):
+    global is_recording
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(VIDEO_FOLDER, f"ALERT_{reason}_{timestamp}.avi")
-    print(f"  [RECORDING] 10s clip — {reason}")
-    try:
-        import cv2
-        import numpy as np
-        fourcc = cv2.VideoWriter_fourcc(*"XVID")
-        out = cv2.VideoWriter(filename, fourcc, 20.0, (640, 480))
-        start = time_now()
-        while int(time_now() - start) < RECORD_DURATION:
-            frame = CAMERA.capture_array()
-            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            sleep(0.05)
-        out.release()
-        print(f"  [SAVED] {filename}")
-    except Exception:
-        pass
+    filename = os.path.join(VIDEO_FOLDER, f"ALERT_{reason}_{timestamp}.h264")
+    print(f"\n  [RECORDING] {RECORD_DURATION}s clip — {reason}")
+
+    with camera_busy:
+        try:
+            CAMERA.start_recording(filename)
+            sleep(RECORD_DURATION)
+            CAMERA.stop_recording()
+            print(f"  [SAVED] {filename}\n")
+        except Exception as e:
+            print(f"  [CAM RECORD ERROR] {e}")
+        finally:
+            is_recording = False
+
+
+def trigger_async_recording(reason):
+    global is_recording
+    if CAMERA is None or is_recording:
+        return
+    is_recording = True
+    video_thread = threading.Thread(target=_video_recorder_worker, args=(reason,))
+    video_thread.daemon = True
+    video_thread.start()
+
+
+# ---------------------------------------------------------------------------
+# Live frame upload (background thread) — streams a JPEG to the cloud
+# ---------------------------------------------------------------------------
+def frame_upload_loop():
+    import io
+    while True:
+        sleep(FRAME_UPLOAD_INTERVAL)
+        if CAMERA is None:
+            continue
+        # Don't capture while a recording is in progress
+        if is_recording:
+            continue
+        if not camera_busy.acquire(blocking=False):
+            continue
+        try:
+            # picamera2's built-in encoder writes JPEG without OpenCV/PIL
+            buf = io.BytesIO()
+            CAMERA.capture_file(buf, format="jpeg")
+            jpeg = buf.getvalue()
+            try:
+                requests.post(f"{SERVER_URL}/api/upload_frame",
+                              data=jpeg,
+                              headers={"Content-Type": "image/jpeg"},
+                              timeout=5)
+            except requests.RequestException:
+                pass
+        except Exception:
+            pass
+        finally:
+            camera_busy.release()
 
 
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 try:
+    # Start the live frame upload thread
+    if CAMERA is not None:
+        upload_thread = threading.Thread(target=frame_upload_loop, daemon=True)
+        upload_thread.start()
+        print("[STREAM] Live video upload active")
+
     while True:
         # Read sensors
         wet = water_sensor.value
@@ -121,24 +173,25 @@ try:
             temp_c = None
             humidity = None
 
-        # Print to console
         w = "WET" if water_active else "dry"
         m = "MOTION" if motion_active else "quiet"
         s = "NOISE" if sound_active else "quiet"
         t = f"{temp_c:.1f}C/{humidity:.1f}%" if temp_c is not None else "--/--"
         print(f"  Water:{w:<6} Motion:{m:<8} Sound:{s:<8} | {t}")
 
-        # POST to cloud
-        ok = post_data(temp_c, humidity, motion_active, sound_active, water_active)
-
-        # Video recording on alerts
+        # Video recording triggers (non-blocking)
         if motion_active:
-            record_security_event("MOTION")
+            trigger_async_recording("MOTION")
         elif sound_active:
-            record_security_event("SOUND")
+            trigger_async_recording("SOUND")
+
+        # POST sensor data to cloud
+        post_data(temp_c, humidity, motion_active, sound_active, water_active)
 
         sleep(INTERVAL)
 
 except KeyboardInterrupt:
     print("\n[!] Shutdown.")
     dht_sensor.exit()
+    if CAMERA:
+        CAMERA.stop()
