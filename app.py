@@ -96,9 +96,9 @@ def send_alert_email(alerts):
     payload = {
         "from": BIRD_SENDER,
         "to": [recipient],
-        "subject": f"🚼 Baby Monitor Alert ({len(alerts)})",
+        "subject": f"🚼 Cradle Alert ({len(alerts)})",
         "html": (
-            "<h2>🚼 Baby Monitor Alert</h2>"
+            "<h2>🚼 Baby Cradle Alert</h2>"
             f"<p>Detected {len(alerts)} issue(s) at <b>{ts}</b>:</p>"
             f"<ul>{items}</ul>"
             f"<p>Live dashboard: <a href='https://baby-monitoring-system.onrender.com'>"
@@ -409,7 +409,7 @@ def api_chat():
         reply = f"Diaper is **{diaper_str}**."
         reply += " It's time for a change!" if d.get("wetness") else " All good, no change needed."
     elif any(w in msg for w in ["hi", "hello", "hey", "help"]):
-        reply = "Hello! I'm your Baby Monitor assistant. Ask about **temperature**, **humidity**, **motion**, **sound**, or **diaper**."
+        reply = "Hello! I'm your Baby Cradle Monitoring assistant. Ask about **temperature**, **humidity**, **motion**, **sound**, or **diaper**."
     elif any(w in msg for w in ["status", "summary", "all", "overview"]):
         flags = []
         if d.get("motion"):
@@ -434,6 +434,6 @@ def api_chat():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     debug = os.getenv("RENDER") is None
-    log.info("Baby Monitor Server starting on port %s...", port)
+    log.info("Baby Cradle Monitoring Server starting on port %s...", port)
     socketio.run(app, host="0.0.0.0", port=port, debug=debug,
                  allow_unsafe_werkzeug=True)

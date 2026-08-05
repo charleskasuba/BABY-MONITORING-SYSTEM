@@ -62,7 +62,7 @@ dht_sensor = adafruit_dht.DHT22(DHT_PIN)
 os.makedirs(VIDEO_FOLDER, exist_ok=True)
 
 print("=" * 65)
-print("  Smart Baby Monitor — Threaded Pi Client")
+print("  Baby Cradle Monitoring System — Threaded Pi Client")
 print(f"  Sending to: {SERVER_URL}")
 print("=" * 65)
 
