@@ -5,96 +5,191 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Baby Cradle Monitoring System - Live Video</title>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg: #0b1020;
+            --card: rgba(255,255,255,0.06);
+            --card-border: rgba(255,255,255,0.09);
+            --text: #e8ecf8;
+            --muted: #8b93b0;
+            --accent: #6366f1;
+            --accent2: #a855f7;
+            --danger: #ef4444;
+            --warn: #f59e0b;
+            --ok: #22c55e;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+            color: var(--text);
             min-height: 100vh;
+            background:
+                radial-gradient(900px 500px at 15% -10%, rgba(99,102,241,0.35), transparent 60%),
+                radial-gradient(800px 500px at 110% 10%, rgba(168,85,247,0.25), transparent 60%),
+                var(--bg);
         }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .container { max-width: 1300px; margin: 0 auto; padding: 24px; }
 
         .nav {
-            background: white; border-radius: 15px; padding: 15px 30px;
-            margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+            display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--card-border);
+            backdrop-filter: blur(14px);
+            border-radius: 18px; padding: 14px 22px;
+            margin-bottom: 28px; position: sticky; top: 14px; z-index: 10;
         }
-        .nav h1 { color: #667eea; margin-right: 40px; font-size: 1.4rem; }
-        .nav a {
-            color: #666; text-decoration: none; padding: 10px 20px;
-            border-radius: 8px; transition: all 0.3s; font-weight: 500;
+        .brand { display: flex; align-items: center; gap: 12px; margin-right: 24px; }
+        .brand-logo {
+            width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            font-size: 1.3rem; box-shadow: 0 6px 18px rgba(99,102,241,0.45);
         }
-        .nav a:hover, .nav a.active { background: #667eea; color: white; }
+        .brand h1 { font-size: 1.15rem; font-weight: 700; }
+        .brand small { display: block; color: var(--muted); font-size: 0.7rem; font-weight: 500; }
+        .nav a.link {
+            color: var(--muted); text-decoration: none; padding: 9px 18px;
+            border-radius: 10px; font-weight: 600; font-size: 0.85rem;
+            transition: all 0.25s;
+        }
+        .nav a.link:hover, .nav a.link.active { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; box-shadow: 0 6px 16px rgba(99,102,241,0.35); }
+        .live-chip {
+            margin-left: auto; display: flex; align-items: center; gap: 8px;
+            font-size: 0.75rem; font-weight: 600; color: var(--danger);
+            background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3);
+            padding: 8px 14px; border-radius: 30px;
+        }
+        .pulse-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); animation: pulse 1.6s infinite; }
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); } 70% { box-shadow: 0 0 0 9px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
 
-        .main-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        .main-grid { display: grid; grid-template-columns: 2.2fr 1fr; gap: 20px; }
 
-        .video-container {
-            background: #111; border-radius: 15px; overflow: hidden;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.4);
-            aspect-ratio: 4/3;
+        .video-panel {
+            background: var(--card); border: 1px solid var(--card-border);
+            backdrop-filter: blur(10px); border-radius: 20px; overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.45);
         }
+        .video-panel .rec {
+            position: absolute; top: 14px; left: 14px; z-index: 2;
+            display: flex; align-items: center; gap: 7px;
+            background: rgba(0,0,0,0.55); color: #f87171;
+            font-size: 0.7rem; font-weight: 700; letter-spacing: 1px;
+            padding: 6px 12px; border-radius: 20px;
+        }
+        .video-panel .rec .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; animation: blink 1.2s infinite; }
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
+        .video-container { position: relative; background: #000; aspect-ratio: 4/3; }
         .video-container img { width: 100%; height: 100%; display: block; object-fit: contain; }
+        .video-placeholder {
+            position: absolute; inset: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 12px; color: var(--muted);
+            background: #05070f;
+        }
+        .video-placeholder .big { font-size: 3rem; }
 
-        .info-panel { display: flex; flex-direction: column; gap: 15px; }
+        .info-panel { display: flex; flex-direction: column; gap: 16px; }
         .info-card {
-            background: white; border-radius: 15px; padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center;
+            background: var(--card); border: 1px solid var(--card-border);
+            backdrop-filter: blur(10px); border-radius: 18px; padding: 18px;
+            display: flex; align-items: center; gap: 16px;
+            transition: transform 0.25s;
         }
-        .info-label { font-size: 0.7rem; color: #999; text-transform: uppercase; letter-spacing: 1px; }
-        .info-value { font-size: 1.8rem; font-weight: 700; margin: 8px 0; color: #333; }
+        .info-card:hover { transform: translateY(-4px); }
+        .info-icon {
+            width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center;
+            font-size: 1.4rem; background: rgba(255,255,255,0.08); flex-shrink: 0;
+        }
+        .info-meta { flex: 1; }
+        .info-label { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700; }
+        .info-value { font-size: 1.35rem; font-weight: 800; margin-top: 2px; }
         .status-badge {
-            display: inline-block; padding: 4px 14px; border-radius: 20px;
-            font-size: 0.7rem; font-weight: 600;
+            display: inline-block; padding: 5px 14px; border-radius: 30px;
+            font-size: 0.68rem; font-weight: 700; letter-spacing: 0.3px;
         }
-        .normal { background: #d4edda; color: #155724; }
-        .warning { background: #fff3cd; color: #856404; }
-        .critical { background: #f8d7da; color: #721c24; }
+        .normal { background: rgba(34,197,94,0.14); color: #4ade80; }
+        .warning { background: rgba(245,158,11,0.14); color: #fbbf24; }
+        .critical { background: rgba(239,68,68,0.16); color: #f87171; }
 
-        @media (max-width: 768px) {
+        .footer { text-align: center; color: var(--muted); font-size: 0.75rem; padding: 22px 0 6px; }
+
+        @media (max-width: 900px) {
             .main-grid { grid-template-columns: 1fr; }
+            .brand h1 { display: none; }
+            .live-chip { margin-left: 0; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="nav">
-            <h1>Baby Cradle Monitoring System</h1>
-            <a href="/">Dashboard</a>
-            <a href="/live" class="active">Live Video</a>
-            <a href="/history">History</a>
-            <a href="/settings">Settings</a>
+            <div class="brand">
+                <div class="brand-logo">🚼</div>
+                <div>
+                    <h1>Baby Cradle Monitoring</h1>
+                    <small>Smart IoT Monitoring System</small>
+                </div>
+            </div>
+            <a href="/" class="link">Dashboard</a>
+            <a href="/live" class="link active">Live Video</a>
+            <a href="/history" class="link">History</a>
+            <div class="live-chip"><span class="pulse-dot"></span>LIVE</div>
         </div>
 
         <div class="main-grid">
-            <div class="video-container">
-                <img src="/video_feed" alt="Live Cradle Stream" id="videoFeed">
+            <div class="video-panel">
+                <div class="video-container">
+                    <div class="rec" id="rec-chip" style="display:none;"><span class="rec-dot"></span>REC</div>
+                    <img src="/video_feed" alt="Live Cradle Stream" id="videoFeed" style="display:none;">
+                    <div class="video-placeholder" id="videoPlaceholder">
+                        <div class="big">📷</div>
+                        <div>Waiting for camera feed...</div>
+                    </div>
+                </div>
             </div>
 
             <div class="info-panel">
                 <div class="info-card">
-                    <div class="info-label">🌡️ Temperature</div>
-                    <div class="info-value" id="temp">-- °C</div>
-                    <div id="temp-badge" class="status-badge">Loading...</div>
+                    <div class="info-icon">🌡️</div>
+                    <div class="info-meta">
+                        <div class="info-label">Temperature</div>
+                        <div class="info-value" id="temp">-- °C</div>
+                    </div>
+                    <div id="temp-badge" class="status-badge normal">Loading...</div>
                 </div>
                 <div class="info-card">
-                    <div class="info-label">💧 Humidity</div>
-                    <div class="info-value" id="humidity">-- %</div>
-                    <div id="hum-badge" class="status-badge">Loading...</div>
+                    <div class="info-icon">💧</div>
+                    <div class="info-meta">
+                        <div class="info-label">Humidity</div>
+                        <div class="info-value" id="humidity">-- %</div>
+                    </div>
+                    <div id="hum-badge" class="status-badge normal">Loading...</div>
                 </div>
                 <div class="info-card">
-                    <div class="info-label">🏃 Motion</div>
-                    <div class="info-value" id="motion">--</div>
+                    <div class="info-icon">🏃</div>
+                    <div class="info-meta">
+                        <div class="info-label">Motion</div>
+                        <div class="info-value" id="motion">--</div>
+                    </div>
                 </div>
                 <div class="info-card">
-                    <div class="info-label">🔊 Sound</div>
-                    <div class="info-value" id="sound">--</div>
+                    <div class="info-icon">🔊</div>
+                    <div class="info-meta">
+                        <div class="info-label">Sound</div>
+                        <div class="info-value" id="sound">--</div>
+                    </div>
                 </div>
                 <div class="info-card">
-                    <div class="info-label">🚼 Diaper</div>
-                    <div class="info-value" id="wetness">--</div>
+                    <div class="info-icon">🚼</div>
+                    <div class="info-meta">
+                        <div class="info-label">Diaper</div>
+                        <div class="info-value" id="wetness">--</div>
+                    </div>
                 </div>
             </div>
         </div>
+
+        <div class="footer">Baby Cradle Monitoring System</div>
     </div>
 
     <script>
@@ -126,6 +221,17 @@
         });
 
         const videoImg = document.getElementById('videoFeed');
+        const placeholder = document.getElementById('videoPlaceholder');
+        videoImg.onload = () => {
+            videoImg.style.display = 'block';
+            placeholder.style.display = 'none';
+            document.getElementById('rec-chip').style.display = 'flex';
+        };
+        videoImg.onerror = () => {
+            videoImg.style.display = 'none';
+            placeholder.style.display = 'flex';
+            document.getElementById('rec-chip').style.display = 'none';
+        };
         setInterval(() => { videoImg.src = '/video_feed?' + Date.now(); }, 5000);
     </script>
 </body>

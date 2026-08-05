@@ -10,13 +10,15 @@ import board
 import adafruit_dht
 from gpiozero import DigitalInputDevice
 import requests
+from picamera2 import Picamera2
+from picamera2.outputs import FileOutput
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SERVER_URL = "https://baby-monitoring-system.onrender.com"
 
-# Sensor pins
+# Sensor pins (BCM GPIO)
 WATER_PIN = 17
 MOTION_PIN = 27
 SOUND_PIN = 22
@@ -25,12 +27,14 @@ DHT_PIN = board.D4
 # Recording
 RECORD_DURATION = 10
 VIDEO_FOLDER = "recordings"
-INTERVAL = 3
 
-# Live stream frame upload interval (seconds) — how often a JPEG is sent to cloud
+# How often sensor data is sent to the web dashboard (seconds)
+INTERVAL = 1
+
+# Live stream frame upload interval (seconds)
 FRAME_UPLOAD_INTERVAL = 2.0
 
-# Wetness sensor: True if sensor outputs HIGH (1) when wet, else False
+# Wetness sensor logic: True if sensor outputs HIGH (1) when wet, False if LOW (0)
 WETNESS_ACTIVE_HIGH = False
 
 # Thread lock so recording and streaming never grab the camera at the same time
@@ -42,7 +46,6 @@ camera_busy = threading.Lock()
 # ---------------------------------------------------------------------------
 CAMERA = None
 try:
-    from picamera2 import Picamera2
     CAMERA = Picamera2()
     cam_config = CAMERA.create_video_configuration(main={"size": (640, 480)})
     CAMERA.configure(cam_config)
@@ -55,9 +58,14 @@ except Exception as e:
 # Sensor setup
 # ---------------------------------------------------------------------------
 water_sensor = DigitalInputDevice(WATER_PIN)
-motion_sensor = DigitalInputDevice(MOTION_PIN)
+
+# Software bounce filtering on Motion sensor to reduce false motion triggers
+motion_sensor = DigitalInputDevice(MOTION_PIN, pull_up=False, bounce_time=0.2)
+
 sound_sensor = DigitalInputDevice(SOUND_PIN)
-dht_sensor = adafruit_dht.DHT22(DHT_PIN)
+
+# Initialize DHT with use_pulseio=False to avoid C-level pulse overflow crashes
+dht_sensor = adafruit_dht.DHT22(DHT_PIN, use_pulseio=False)
 
 os.makedirs(VIDEO_FOLDER, exist_ok=True)
 
@@ -97,7 +105,10 @@ def _video_recorder_worker(reason):
 
     with camera_busy:
         try:
-            CAMERA.start_recording(filename)
+            # Fixed Picamera2 recording workflow with explicit encoder and FileOutput
+            encoder = CAMERA.create_encoder()
+            output = FileOutput(filename)
+            CAMERA.start_recording(encoder, output)
             sleep(RECORD_DURATION)
             CAMERA.stop_recording()
             print(f"  [SAVED] {filename}\n")
@@ -118,7 +129,7 @@ def trigger_async_recording(reason):
 
 
 # ---------------------------------------------------------------------------
-# Live frame upload (background thread) — streams a JPEG to the cloud
+# Live frame upload (background thread) — streams JPEG to cloud
 # ---------------------------------------------------------------------------
 def frame_upload_loop():
     import io
@@ -126,13 +137,12 @@ def frame_upload_loop():
         sleep(FRAME_UPLOAD_INTERVAL)
         if CAMERA is None:
             continue
-        # Don't capture while a recording is in progress
+        # Skip frame upload while video recording is in progress
         if is_recording:
             continue
         if not camera_busy.acquire(blocking=False):
             continue
         try:
-            # picamera2's built-in encoder writes JPEG without OpenCV/PIL
             buf = io.BytesIO()
             CAMERA.capture_file(buf, format="jpeg")
             jpeg = buf.getvalue()
@@ -153,23 +163,24 @@ def frame_upload_loop():
 # Main loop
 # ---------------------------------------------------------------------------
 try:
-    # Start the live frame upload thread
+    # Start live video streaming thread
     if CAMERA is not None:
         upload_thread = threading.Thread(target=frame_upload_loop, daemon=True)
         upload_thread.start()
         print("[STREAM] Live video upload active")
 
     while True:
-        # Read sensors
+        # Read digital sensors
         wet = water_sensor.value
         water_active = (wet == 1) if WETNESS_ACTIVE_HIGH else (wet == 0)
         motion_active = motion_sensor.value == 1
         sound_active = sound_sensor.value == 1
 
+        # Read temperature and humidity safely
         try:
             temp_c = dht_sensor.temperature
             humidity = dht_sensor.humidity
-        except RuntimeError:
+        except (RuntimeError, Exception):
             temp_c = None
             humidity = None
 
@@ -179,19 +190,23 @@ try:
         t = f"{temp_c:.1f}C/{humidity:.1f}%" if temp_c is not None else "--/--"
         print(f"  Water:{w:<6} Motion:{m:<8} Sound:{s:<8} | {t}")
 
-        # Video recording triggers (non-blocking)
+        # Non-blocking video recording triggers
         if motion_active:
             trigger_async_recording("MOTION")
         elif sound_active:
             trigger_async_recording("SOUND")
 
-        # POST sensor data to cloud
+        # Ingest sensor readings to web server
         post_data(temp_c, humidity, motion_active, sound_active, water_active)
 
         sleep(INTERVAL)
 
 except KeyboardInterrupt:
-    print("\n[!] Shutdown.")
-    dht_sensor.exit()
+    print("\n[!] Shutdown requested. Cleaning up...")
+    try:
+        dht_sensor.exit()
+    except Exception:
+        pass
     if CAMERA:
         CAMERA.stop()
+    sys.exit(0)

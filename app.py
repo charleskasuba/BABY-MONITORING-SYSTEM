@@ -197,11 +197,6 @@ def history():
     return render_template("history.html")
 
 
-@app.route("/settings")
-def settings():
-    return render_template("settings.html")
-
-
 @app.route("/api/current_data")
 def api_current_data():
     return jsonify(current_data)
@@ -241,43 +236,6 @@ def api_alerts():
         return jsonify(response.data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/settings", methods=["GET", "POST"])
-def api_settings():
-    defaults = {"temp_min": 20, "temp_max": 25,
-                "humidity_min": 40, "humidity_max": 60, "alert_email": ""}
-    if supabase is None:
-        if request.method == "GET":
-            return jsonify(defaults)
-        return jsonify({"success": True})
-
-    if request.method == "GET":
-        try:
-            response = supabase.table("settings").select("*").eq("id", 1).execute()
-            if response.data:
-                return jsonify(response.data[0])
-            return jsonify(defaults)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    elif request.method == "POST":
-        try:
-            data = request.json
-            supabase.table("settings").update(data).eq("id", 1).execute()
-            if "temp_min" in data:
-                os.environ["TEMP_MIN"] = str(data["temp_min"])
-            if "temp_max" in data:
-                os.environ["TEMP_MAX"] = str(data["temp_max"])
-            if "humidity_min" in data:
-                os.environ["HUMIDITY_MIN"] = str(data["humidity_min"])
-            if "humidity_max" in data:
-                os.environ["HUMIDITY_MAX"] = str(data["humidity_max"])
-            if "alert_email" in data:
-                os.environ["ALERT_EMAIL"] = data["alert_email"]
-            return jsonify({"success": True})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/clear_alerts", methods=["POST"])
