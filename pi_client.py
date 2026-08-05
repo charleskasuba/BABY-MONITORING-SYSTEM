@@ -29,10 +29,13 @@ RECORD_DURATION = 10
 VIDEO_FOLDER = "recordings"
 
 # How often sensor data is sent to the web dashboard (seconds)
-INTERVAL = 1
+INTERVAL = 10
 
 # Live stream frame upload interval (seconds)
 FRAME_UPLOAD_INTERVAL = 2.0
+
+# Minimum seconds between video recordings (stops a stuck sensor hogging the camera)
+RECORD_COOLDOWN = 30
 
 # Wetness sensor logic: True if sensor outputs HIGH (1) when wet, False if LOW (0)
 WETNESS_ACTIVE_HIGH = False
@@ -40,6 +43,11 @@ WETNESS_ACTIVE_HIGH = False
 # Thread lock so recording and streaming never grab the camera at the same time
 is_recording = False
 camera_busy = threading.Lock()
+
+# Edge-trigger bookkeeping so a stuck/noisy sensor can't trigger endless recordings
+last_record_ts = 0
+prev_motion = False
+prev_sound = False
 
 # ---------------------------------------------------------------------------
 # Camera setup: Native Picamera2 API
@@ -176,6 +184,18 @@ try:
         motion_active = motion_sensor.value == 1
         sound_active = sound_sensor.value == 1
 
+        # Edge-triggered recording: only fire on a NEW event (quiet->loud) and
+        # respect the cooldown, so a sensor that stays active can't monopolize
+        # the camera and block the live video feed.
+        motion_trigger = motion_active and not prev_motion
+        sound_trigger = sound_active and not prev_sound
+        prev_motion = motion_active
+        prev_sound = sound_active
+        now = time_now()
+        if (motion_trigger or sound_trigger) and now - last_record_ts >= RECORD_COOLDOWN:
+            last_record_ts = now
+            trigger_async_recording("MOTION" if motion_trigger else "SOUND")
+
         # Read temperature and humidity safely
         try:
             temp_c = dht_sensor.temperature
@@ -189,12 +209,6 @@ try:
         s = "NOISE" if sound_active else "quiet"
         t = f"{temp_c:.1f}C/{humidity:.1f}%" if temp_c is not None else "--/--"
         print(f"  Water:{w:<6} Motion:{m:<8} Sound:{s:<8} | {t}")
-
-        # Non-blocking video recording triggers
-        if motion_active:
-            trigger_async_recording("MOTION")
-        elif sound_active:
-            trigger_async_recording("SOUND")
 
         # Ingest sensor readings to web server
         post_data(temp_c, humidity, motion_active, sound_active, water_active)
