@@ -6,6 +6,7 @@
     <title>Baby Cradle Monitoring System - Dashboard</title>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
@@ -246,7 +247,8 @@
         <div class="panel video-panel">
             <h2><span class="bar"></span>Live Camera</h2>
             <div class="video-box">
-                <img src="/video_feed" alt="Live Camera" id="dashCam" style="display:none;">
+                <video id="dashCam" autoplay muted playsinline style="width:100%;height:100%;object-fit:contain;display:none;"></video>
+                <img id="dashCamFallback" src="/video_feed" alt="Live Camera" style="width:100%;height:100%;object-fit:contain;display:none;">
                 <div class="video-empty" id="dashCamEmpty">
                     <div class="big">📷</div>
                     <div>Waiting for camera feed...</div>
@@ -424,10 +426,44 @@
         socket.on('connect', () => { document.getElementById('conn-status').textContent = 'LIVE'; });
 
         const dashCam = document.getElementById('dashCam');
+        const dashCamFallback = document.getElementById('dashCamFallback');
         const dashCamEmpty = document.getElementById('dashCamEmpty');
-        dashCam.onload = () => { dashCam.style.display = 'block'; dashCamEmpty.style.display = 'none'; };
-        dashCam.onerror = () => { dashCam.style.display = 'none'; dashCamEmpty.style.display = 'flex'; };
-        setInterval(() => { dashCam.src = '/video_feed?' + Date.now(); }, 5000);
+
+        function dashShowVideo() { dashCam.style.display = 'block'; dashCamFallback.style.display = 'none'; dashCamEmpty.style.display = 'none'; }
+        function dashShowFallback() { dashCam.style.display = 'none'; dashCamFallback.style.display = 'block'; dashCamEmpty.style.display = 'none'; }
+        function dashShowEmpty() { dashCam.style.display = 'none'; dashCamFallback.style.display = 'none'; dashCamEmpty.style.display = 'flex'; }
+
+        let dashHls = null;
+        let dashMJPEG = false;
+
+        function dashUseMJPEG() {
+            if (dashMJPEG) return;
+            dashMJPEG = true;
+            if (dashHls) { dashHls.destroy(); dashHls = null; }
+            dashShowFallback();
+            setInterval(() => { dashCamFallback.src = '/video_feed?' + Date.now(); }, 5000);
+        }
+
+        function dashStartHls() {
+            if (dashHls) { dashHls.destroy(); dashHls = null; }
+            if (Hls.isSupported()) {
+                dashHls = new Hls({ liveDurationInfinity: true, liveSyncDurationCount: 2, maxLiveSyncPlaybackRate: 1.5 });
+                dashHls.on(Hls.Events.MANIFEST_PARSED, () => { dashShowVideo(); dashCam.play().catch(() => {}); });
+                dashHls.on(Hls.Events.ERROR, (e, data) => { if (data && data.fatal) dashUseMJPEG(); });
+                dashHls.loadSource('/hls/index.m3u8');
+                dashHls.attachMedia(dashCam);
+            } else if (dashCam.canPlayType('application/vnd.apple.mpegurl')) {
+                dashCam.src = '/hls/index.m3u8';
+                dashCam.addEventListener('loadedmetadata', () => dashShowVideo());
+                dashCam.addEventListener('error', () => dashUseMJPEG());
+                dashCam.play().catch(() => {});
+            } else {
+                dashUseMJPEG();
+            }
+        }
+
+        dashStartHls();
+        setTimeout(() => { if (!dashMJPEG && !dashCam.currentTime) dashUseMJPEG(); }, 15000);
 
         loadHistory();
         loadAlerts();

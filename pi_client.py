@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import os
 import sys
+import subprocess
+import shutil
 import threading
-import time
 from time import sleep, time as time_now
 from datetime import datetime
 
@@ -10,13 +11,14 @@ import board
 import adafruit_dht
 from gpiozero import DigitalInputDevice
 import requests
-from picamera2 import Picamera2
-from picamera2.outputs import FileOutput
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SERVER_URL = "https://baby-monitoring-system.onrender.com"
+
+# "hls" = continuous true video (needs ffmpeg + libcamera-vid), "mjpeg" = photo snapshots
+STREAM_MODE = os.getenv("STREAM_MODE", "hls").lower()
 
 # Sensor pins (BCM GPIO)
 WATER_PIN = 17
@@ -31,14 +33,23 @@ VIDEO_FOLDER = "recordings"
 # How often sensor data is sent to the web dashboard (seconds)
 INTERVAL = 10
 
-# Live stream frame upload interval (seconds)
+# Live stream photo interval (seconds) — only used in MJPEG fallback mode
 FRAME_UPLOAD_INTERVAL = 2.0
 
-# Minimum seconds between video recordings (stops a stuck sensor hogging the camera)
+# Minimum seconds between alert video clips (stops a stuck sensor hogging the camera)
 RECORD_COOLDOWN = 30
 
 # Wetness sensor logic: True if sensor outputs HIGH (1) when wet, False if LOW (0)
 WETNESS_ACTIVE_HIGH = False
+
+# HLS live video settings
+HLS_DIR = "hls_stream"
+HLS_WIDTH = 640
+HLS_HEIGHT = 480
+HLS_FPS = 15
+HLS_BITRATE = 500000
+HLS_SEGMENT_SECS = 4
+HLS_LIST_SIZE = 4
 
 # Thread lock so recording and streaming never grab the camera at the same time
 is_recording = False
@@ -49,18 +60,40 @@ last_record_ts = 0
 prev_motion = False
 prev_sound = False
 
+os.makedirs(VIDEO_FOLDER, exist_ok=True)
+
+
 # ---------------------------------------------------------------------------
-# Camera setup: Native Picamera2 API
+# Camera setup
+#   HLS mode  : libcamera-vid owns the camera (true video streaming)
+#   MJPEG mode: picamera2 takes photo snapshots for the live feed
 # ---------------------------------------------------------------------------
 CAMERA = None
-try:
-    CAMERA = Picamera2()
-    cam_config = CAMERA.create_video_configuration(main={"size": (640, 480)})
-    CAMERA.configure(cam_config)
-    CAMERA.start()
-    print("[CAMERA] Picamera2 initialized successfully.")
-except Exception as e:
-    print(f"[CAMERA] No camera detected or init error: {e}")
+
+
+def init_picamera():
+    global CAMERA
+    try:
+        from picamera2 import Picamera2
+        CAMERA = Picamera2()
+        cam_config = CAMERA.create_video_configuration(main={"size": (HLS_WIDTH, HLS_HEIGHT)})
+        CAMERA.configure(cam_config)
+        CAMERA.start()
+        print("[CAMERA] Picamera2 initialized successfully.")
+    except Exception as e:
+        print(f"[CAMERA] No camera detected or init error: {e}")
+
+
+if STREAM_MODE == "mjpeg":
+    init_picamera()
+else:
+    if not (shutil.which("ffmpeg") and shutil.which("libcamera-vid")):
+        print("[HLS] ffmpeg or libcamera-vid not found — falling back to MJPEG photo mode")
+        print("[HLS] Install ffmpeg with: sudo apt install ffmpeg")
+        STREAM_MODE = "mjpeg"
+        init_picamera()
+    else:
+        os.makedirs(HLS_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Sensor setup
@@ -75,11 +108,9 @@ sound_sensor = DigitalInputDevice(SOUND_PIN)
 # Initialize DHT with use_pulseio=False to avoid C-level pulse overflow crashes
 dht_sensor = adafruit_dht.DHT22(DHT_PIN, use_pulseio=False)
 
-os.makedirs(VIDEO_FOLDER, exist_ok=True)
-
 print("=" * 65)
 print("  Baby Cradle Monitoring System — Threaded Pi Client")
-print(f"  Sending to: {SERVER_URL}")
+print(f"  Sending to: {SERVER_URL}  |  Video mode: {STREAM_MODE.upper()}")
 print("=" * 65)
 
 
@@ -103,7 +134,77 @@ def post_data(temp, hum, motion, sound, wetness):
 
 
 # ---------------------------------------------------------------------------
-# Video recording (background thread, on motion/sound)
+# HLS live video (true video throughout)
+# ---------------------------------------------------------------------------
+def start_hls_pipeline():
+    """Pipe libcamera-vid H.264 into ffmpeg which produces HLS segments."""
+    os.makedirs(HLS_DIR, exist_ok=True)
+    capture = [
+        "libcamera-vid", "-t", "0", "--inline",
+        "--width", str(HLS_WIDTH), "--height", str(HLS_HEIGHT),
+        "--framerate", str(HLS_FPS), "--codec", "h264",
+        "--profile", "baseline", "--level", "4",
+        "--bitrate", str(HLS_BITRATE), "--output", "-",
+    ]
+    mux = [
+        "ffmpeg", "-loglevel", "warning",
+        "-f", "h264", "-i", "pipe:0", "-an", "-c", "copy",
+        "-f", "hls", "-hls_time", str(HLS_SEGMENT_SECS),
+        "-hls_list_size", str(HLS_LIST_SIZE),
+        "-hls_flags", "delete_segments",
+        os.path.join(HLS_DIR, "index.m3u8"),
+    ]
+    p1 = subprocess.Popen(capture, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    p2 = subprocess.Popen(mux, stdin=p1.stdout, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL)
+    if p1.stdout:
+        p1.stdout.close()
+    return p1, p2
+
+
+def hls_loop():
+    """Supervise the HLS pipeline — restart it if it ever dies."""
+    while True:
+        try:
+            p1, p2 = start_hls_pipeline()
+            p2.wait()
+            p1.wait()
+        except Exception as e:
+            print(f"[HLS] pipeline error: {e}")
+        sleep(2)
+
+
+def hls_uploader_loop():
+    """Upload new/changed HLS segments + playlist to the cloud server."""
+    sent = {}
+    while True:
+        try:
+            if not os.path.isdir(HLS_DIR):
+                sleep(1)
+                continue
+            for fname in sorted(os.listdir(HLS_DIR)):
+                if not (fname.endswith(".m3u8") or fname.endswith(".ts")):
+                    continue
+                path = os.path.join(HLS_DIR, fname)
+                mtime = os.path.getmtime(path)
+                if sent.get(path) == mtime:
+                    continue
+                with open(path, "rb") as f:
+                    content = f.read()
+                r = requests.post(
+                    f"{SERVER_URL}/api/hls_upload",
+                    params={"filename": fname},
+                    data=content, timeout=8,
+                )
+                if r.ok:
+                    sent[path] = mtime
+        except Exception:
+            pass
+        sleep(1)
+
+
+# ---------------------------------------------------------------------------
+# Video recording (background thread, on motion/sound) — MJPEG mode only
 # ---------------------------------------------------------------------------
 def _video_recorder_worker(reason):
     global is_recording
@@ -115,7 +216,7 @@ def _video_recorder_worker(reason):
         try:
             # Fixed Picamera2 recording workflow with explicit encoder and FileOutput
             encoder = CAMERA.create_encoder()
-            output = FileOutput(filename)
+            output = __import__("picamera2.outputs", fromlist=["FileOutput"]).FileOutput(filename)
             CAMERA.start_recording(encoder, output)
             sleep(RECORD_DURATION)
             CAMERA.stop_recording()
@@ -137,7 +238,7 @@ def trigger_async_recording(reason):
 
 
 # ---------------------------------------------------------------------------
-# Live frame upload (background thread) — streams JPEG to cloud
+# Live frame upload (background thread) — MJPEG fallback mode
 # ---------------------------------------------------------------------------
 def frame_upload_loop():
     import io
@@ -145,7 +246,6 @@ def frame_upload_loop():
         sleep(FRAME_UPLOAD_INTERVAL)
         if CAMERA is None:
             continue
-        # Skip frame upload while video recording is in progress
         if is_recording:
             continue
         if not camera_busy.acquire(blocking=False):
@@ -171,11 +271,14 @@ def frame_upload_loop():
 # Main loop
 # ---------------------------------------------------------------------------
 try:
-    # Start live video streaming thread
-    if CAMERA is not None:
-        upload_thread = threading.Thread(target=frame_upload_loop, daemon=True)
-        upload_thread.start()
-        print("[STREAM] Live video upload active")
+    # Start live video streaming
+    if STREAM_MODE == "hls":
+        threading.Thread(target=hls_loop, daemon=True).start()
+        threading.Thread(target=hls_uploader_loop, daemon=True).start()
+        print("[STREAM] HLS live video active")
+    elif CAMERA is not None:
+        threading.Thread(target=frame_upload_loop, daemon=True).start()
+        print("[STREAM] MJPEG live video upload active")
 
     while True:
         # Read digital sensors
@@ -184,9 +287,7 @@ try:
         motion_active = motion_sensor.value == 1
         sound_active = sound_sensor.value == 1
 
-        # Edge-triggered recording: only fire on a NEW event (quiet->loud) and
-        # respect the cooldown, so a sensor that stays active can't monopolize
-        # the camera and block the live video feed.
+        # Edge-triggered alert recording (MJPEG mode only; CAMERA is None in HLS)
         motion_trigger = motion_active and not prev_motion
         sound_trigger = sound_active and not prev_sound
         prev_motion = motion_active

@@ -56,6 +56,11 @@ current_data = {
 latest_frame = None
 _frame_lock = threading.Lock()
 
+# HLS segments uploaded by the Pi (served under /hls/<filename>)
+hls_segments = {}
+_hls_lock = threading.Lock()
+HLS_MAX_SEGMENTS = 60
+
 
 # ---------------------------------------------------------------------------
 # Alert helpers
@@ -319,6 +324,40 @@ def video_feed():
                        b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
             time.sleep(0.2)
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+# ---------------------------------------------------------------------------
+# HLS live video (segments + playlist uploaded by the Pi)
+# ---------------------------------------------------------------------------
+@app.route("/api/hls_upload", methods=["POST"])
+def api_hls_upload():
+    """Store an HLS segment/playlist pushed by the Pi."""
+    filename = request.args.get("filename", "")
+    if not filename or ".." in filename or "/" in filename or "\\" in filename:
+        return jsonify({"error": "bad filename"}), 400
+    if not (filename.endswith(".m3u8") or filename.endswith(".ts")):
+        return jsonify({"error": "unsupported file type"}), 400
+    data = request.get_data()
+    if not data:
+        return jsonify({"error": "empty"}), 400
+    with _hls_lock:
+        hls_segments[filename] = data
+        if len(hls_segments) > HLS_MAX_SEGMENTS:
+            for k in [k for k in hls_segments if k.endswith(".ts")][: len(hls_segments) - HLS_MAX_SEGMENTS]:
+                hls_segments.pop(k, None)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/hls/<path:filename>")
+def api_hls(filename):
+    """Serve an HLS segment/playlist to the browser."""
+    with _hls_lock:
+        content = hls_segments.get(filename)
+    if content is None:
+        return ("", 404)
+    ctype = ("application/vnd.apple.mpegurl"
+             if filename.endswith(".m3u8") else "video/mp2t")
+    return Response(content, mimetype=ctype)
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Baby Cradle Monitoring System - Live Video</title>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
@@ -139,8 +140,9 @@
         <div class="main-grid">
             <div class="video-panel">
                 <div class="video-container">
-                    <div class="rec" id="rec-chip" style="display:none;"><span class="rec-dot"></span>REC</div>
-                    <img src="/video_feed" alt="Live Cradle Stream" id="videoFeed" style="display:none;">
+                    <div class="rec" id="rec-chip" style="display:none;"><span class="rec-dot"></span>LIVE</div>
+                    <video id="videoFeed" autoplay muted playsinline style="width:100%;height:100%;object-fit:contain;display:none;"></video>
+                    <img id="videoFallback" src="/video_feed" alt="Live Cradle Stream" style="width:100%;height:100%;object-fit:contain;display:none;">
                     <div class="video-placeholder" id="videoPlaceholder">
                         <div class="big">📷</div>
                         <div>Waiting for camera feed...</div>
@@ -220,19 +222,48 @@
             hb.textContent = h === 'normal' ? 'Normal' : h === 'warning' ? 'Warning' : 'Critical';
         });
 
-        const videoImg = document.getElementById('videoFeed');
+        const video = document.getElementById('videoFeed');
+        const fallbackImg = document.getElementById('videoFallback');
         const placeholder = document.getElementById('videoPlaceholder');
-        videoImg.onload = () => {
-            videoImg.style.display = 'block';
-            placeholder.style.display = 'none';
-            document.getElementById('rec-chip').style.display = 'flex';
-        };
-        videoImg.onerror = () => {
-            videoImg.style.display = 'none';
-            placeholder.style.display = 'flex';
-            document.getElementById('rec-chip').style.display = 'none';
-        };
-        setInterval(() => { videoImg.src = '/video_feed?' + Date.now(); }, 5000);
+        const recChip = document.getElementById('rec-chip');
+
+        function showVideo() { video.style.display = 'block'; fallbackImg.style.display = 'none'; placeholder.style.display = 'none'; recChip.style.display = 'flex'; }
+        function showFallback() { video.style.display = 'none'; fallbackImg.style.display = 'block'; placeholder.style.display = 'none'; recChip.style.display = 'flex'; }
+        function showPlaceholder() { video.style.display = 'none'; fallbackImg.style.display = 'none'; placeholder.style.display = 'flex'; recChip.style.display = 'none'; }
+
+        let hls = null;
+        let mjpegOn = false;
+
+        function useMJPEG() {
+            if (mjpegOn) return;
+            mjpegOn = true;
+            if (hls) { hls.destroy(); hls = null; }
+            showFallback();
+            setInterval(() => { fallbackImg.src = '/video_feed?' + Date.now(); }, 5000);
+        }
+
+        function startHls() {
+            if (hls) { hls.destroy(); hls = null; }
+            if (Hls.isSupported()) {
+                hls = new Hls({ liveDurationInfinity: true, liveSyncDurationCount: 2, maxLiveSyncPlaybackRate: 1.5 });
+                hls.on(Hls.Events.MANIFEST_PARSED, () => { showVideo(); video.play().catch(() => {}); });
+                hls.on(Hls.Events.ERROR, (e, data) => {
+                    if (data && data.fatal) useMJPEG();
+                });
+                hls.loadSource('/hls/index.m3u8');
+                hls.attachMedia(video);
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = '/hls/index.m3u8';
+                video.addEventListener('loadedmetadata', () => showVideo());
+                video.addEventListener('error', () => useMJPEG());
+                video.play().catch(() => {});
+            } else {
+                useMJPEG();
+            }
+        }
+
+        startHls();
+        setTimeout(() => { if (!mjpegOn && !video.currentTime) useMJPEG(); }, 15000);
     </script>
 </body>
 </html>
