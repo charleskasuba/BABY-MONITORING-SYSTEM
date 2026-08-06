@@ -1,6 +1,6 @@
 flask==3.0.0
 flask-socketio==5.3.6
 python-socketio==5.11.2
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.12
 python-dotenv==1.0.0
 requests==2.31.0
