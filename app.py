@@ -4,9 +4,11 @@ import sys
 import time
 import threading
 import logging
+import decimal
 from datetime import datetime
 
 import requests
+import psycopg2
 
 from flask import Flask, render_template, request, jsonify, Response
 from flask_socketio import SocketIO
@@ -25,20 +27,38 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = "baby-monitor-secret-key"
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Initialize Supabase (graceful fallback)
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-supabase = None
+# Database via the Supabase connection pooler (direct Postgres)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-if SUPABASE_URL and SUPABASE_KEY:
+
+def db_query(sql, params=()):
+    """Run a query against the Postgres pooler.
+
+    Returns a list of dicts for SELECT, True for writes, None if DB is
+    unavailable. A fresh connection per call keeps things thread-safe and
+    plays well with Supabase's transaction pooler.
+    """
+    if not DATABASE_URL:
+        return None
     try:
-        from supabase import create_client
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        log.info("Supabase client connected: %s", SUPABASE_URL[:30] + "...")
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                if cur.description:
+                    cols = [d[0] for d in cur.description]
+                    return [
+                        {k: (float(v) if isinstance(v, decimal.Decimal) else v)
+                         for k, v in dict(zip(cols, row)).items()}
+                        for row in cur.fetchall()
+                    ]
+                return True
+        finally:
+            conn.close()
     except Exception as e:
-        log.warning("Supabase init failed (app will run without DB): %s", e)
-else:
-    log.warning("SUPABASE_URL/KEY not set — running without database")
+        log.error("DB error: %s", e)
+        return None
 
 # ---------------------------------------------------------------------------
 # Global state — data is ONLY populated by POSTs from the Raspberry Pi
@@ -172,14 +192,13 @@ def check_alerts(temp, hum, wetness):
     if not alerts:
         return
 
-    if supabase is not None:
-        for alert in alerts:
-            try:
-                supabase.table("alerts").insert(alert).execute()
-                socketio.emit("new_alert", alert)
-                log.info("Alert: %s", alert["message"])
-            except Exception as e:
-                log.error("Alert error: %s", e)
+    for alert in alerts:
+        db_query(
+            "insert into alerts (alert_type, severity, message) values (%s, %s, %s)",
+            (alert["alert_type"], alert["severity"], alert["message"]),
+        )
+        socketio.emit("new_alert", alert)
+        log.info("Alert: %s", alert["message"])
 
     send_alert_email(alerts)
 
@@ -209,49 +228,30 @@ def api_current_data():
 
 @app.route("/api/history")
 def api_history():
-    if supabase is None:
-        return jsonify([])
     limit = request.args.get("limit", 100, type=int)
-    try:
-        response = (
-            supabase.table("sensor_readings")
-            .select("*")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return jsonify(response.data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    rows = db_query(
+        "select * from sensor_readings order by created_at desc limit %s", (limit,)
+    )
+    if rows is None:
+        return jsonify([])
+    return jsonify(rows)
 
 
 @app.route("/api/alerts")
 def api_alerts():
-    if supabase is None:
-        return jsonify([])
     limit = request.args.get("limit", 50, type=int)
-    try:
-        response = (
-            supabase.table("alerts")
-            .select("*")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return jsonify(response.data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    rows = db_query(
+        "select * from alerts order by created_at desc limit %s", (limit,)
+    )
+    if rows is None:
+        return jsonify([])
+    return jsonify(rows)
 
 
 @app.route("/api/clear_alerts", methods=["POST"])
 def clear_alerts():
-    if supabase is None:
-        return jsonify({"success": True})
-    try:
-        supabase.table("alerts").update({"is_read": True}).neq("is_read", True).execute()
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    db_query("update alerts set is_read = true where is_read = false")
+    return jsonify({"success": True})
 
 
 # ---------------------------------------------------------------------------
@@ -276,19 +276,19 @@ def api_ingest():
     current_data["wetness"] = wetness
     current_data["last_update"] = datetime.now().isoformat()
 
-    if supabase is not None:
-        reading = {
-            "temperature": temp,
-            "humidity": hum,
-            "motion_detected": motion,
-            "sound_level": sound,
-            "wetness_detected": wetness,
-            "is_abnormal": check_abnormal(temp, hum),
-        }
-        try:
-            supabase.table("sensor_readings").insert(reading).execute()
-        except Exception as e:
-            log.error("DB insert error: %s", e)
+    db_query(
+        "insert into sensor_readings "
+        "(temperature, humidity, motion_detected, sound_level, wetness_detected, is_abnormal) "
+        "values (%s, %s, %s, %s, %s, %s)",
+        (
+            temp,
+            hum,
+            motion,
+            sound,
+            wetness,
+            check_abnormal(temp, hum),
+        ),
+    )
 
     check_alerts(temp, hum, wetness)
     socketio.emit("sensor_update", current_data)
